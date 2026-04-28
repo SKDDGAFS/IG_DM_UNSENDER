@@ -71,15 +71,6 @@ Consider testing on an old conversation first
 
 Only delete messages you're sure you want gone
 
-Common Issues
-Issue	Solution
-"instagrapi could not be resolved"	Run pip install instagrapi
-Login fails repeatedly	Instagram may be blocking the login, wait 24 hours
-"Too many requests" error	You're being rate-limited, wait before trying again
-Script crashes mid-deletion	Messages already deleted won't come back, run again for remaining
-Disclaimer
-This tool is for educational purposes only. It interacts with Instagram's private API which violates their Terms of Service. The developer assumes no liability for any consequences of using this software.
-
 License
 This project is open source and free to use. No warranty provided.
 
