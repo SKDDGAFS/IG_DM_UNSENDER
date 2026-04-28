@@ -1,0 +1,16 @@
+# Ignore session file (contains your login info!)
+session.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyc
+
+# Virtual environment
+venv/
+env/
+.venv/
+
+# IDE files
+.vscode/
+.idea/
