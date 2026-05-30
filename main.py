@@ -100,7 +100,8 @@ class IGDMTool:
         self.my_username = None          # Our Instagram username (filled after login)
         self.my_user_id = None           # Our Instagram user ID (filled after login)
         self.threads = []                # Will store all our DM conversations
-        
+        self.selected_thread_id = None   # The thread selected for deletion
+    
     # ---- LOGIN ----
     
     def login(self):
@@ -293,21 +294,23 @@ class IGDMTool:
     
     def fetch_messages(self):
         """
-        Get all messages from the selected conversation.
-        We need to paginate (load more) because Instagram only sends a few at a time.
+        Get only your own messages from the selected conversation.
+        This avoids storing all users' messages and only keeps the messages we need to delete.
         """
         if not self.selected_thread_id:
             print("ERROR: No conversation selected!")
             return None
         
-        print(f"\nFetching all messages from the conversation...")
-        print("This might take a while if you have lots of messages...")
+        print(f"\nFetching only your messages from the conversation...")
+        print("This might still need to page through the thread, but it will only keep your messages.")
         
-        all_messages = []  # Will store every message we find
+        our_messages = []  # Will store only the messages sent by our account
         next_cursor = None  # Used for pagination (getting next page of messages)
+        page = 0
         
         try:
             while True:
+                page += 1
                 # Build the request parameters
                 params = {
                     "limit": "20"  # Get 20 messages at a time
@@ -330,11 +333,14 @@ class IGDMTool:
                 if not messages:
                     break  # No more messages
                 
-                # Add these messages to our collection
-                all_messages.extend(messages)
+                # Keep only our messages from this page
+                for msg in messages:
+                    sender_id = str(msg.get("user_id", ""))
+                    if sender_id == self.my_user_id:
+                        our_messages.append(msg)
                 
                 # Progress indicator
-                print(f"  Loaded {len(all_messages)} messages so far...")
+                print(f"  Page {page}: collected {len(our_messages)} of your messages so far...")
                 
                 # Check if there are more messages to load
                 next_cursor = thread_data.get("next_cursor")
@@ -344,18 +350,7 @@ class IGDMTool:
                 # Small delay to avoid hitting Instagram's rate limits
                 time.sleep(0.5)
             
-            print(f"\n✓ Total messages found: {len(all_messages)}")
-            
-            # Find which messages are OURS (sent by us)
-            our_messages = []
-            for msg in all_messages:
-                # The user_id of the sender is stored in the message
-                sender_id = str(msg.get("user_id", ""))
-                if sender_id == self.my_user_id:  # This is our message!
-                    our_messages.append(msg)
-            
-            print(f"✓ Messages sent by you: {len(our_messages)}")
-            
+            print(f"\n✓ Total messages sent by you: {len(our_messages)}")
             return our_messages
             
         except Exception as e:
@@ -369,7 +364,7 @@ class IGDMTool:
         Find and delete ALL messages we sent in the selected conversation.
         This is the main feature of the program!
         """
-        # First, get all messages from the conversation
+        # First, get only our messages from the conversation
         our_messages = self.fetch_messages()
         
         if not our_messages:
