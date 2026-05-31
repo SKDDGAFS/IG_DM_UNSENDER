@@ -497,10 +497,22 @@ class IGDMTool:
                 # Delete this specific message
                 # The API endpoint for deleting a message is:
                 # direct_v2/threads/{thread_id}/items/{item_id}/delete/
-                self.client.private_request(
-                    f"direct_v2/threads/{self.selected_thread_id}/items/{item_id}/delete/",
-                    method="POST"
-                )
+                # Different instagrapi versions accept different private_request signatures.
+                # Try passing method="POST" first (newer versions), otherwise fall back
+                # to calling without the method argument.
+                try:
+                    self.client.private_request(
+                        f"direct_v2/threads/{self.selected_thread_id}/items/{item_id}/delete/",
+                        method="POST"
+                    )
+                except TypeError:
+                    # Older instagrapi versions may not accept `method` kwarg
+                    try:
+                        self.client.private_request(
+                            f"direct_v2/threads/{self.selected_thread_id}/items/{item_id}/delete/"
+                        )
+                    except Exception:
+                        raise
                 
                 deleted_count += 1
                 
