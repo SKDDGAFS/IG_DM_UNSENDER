@@ -9,7 +9,13 @@ import os
 import sys
 import json
 import time
+import threading
 from datetime import datetime
+
+try:
+    import msvcrt
+except ImportError:
+    msvcrt = None
 
 #--- 1. CHECK AND IMPORTS -----
 # Make sure user has Python 3.8 or newer (instagrapi needs it)
@@ -160,6 +166,28 @@ class IGDMTool:
     
     # ---- FETCH AND DISPLAY CONVERSATIONS ----
     
+    def _start_ctrl_l_listener(self, stop_event):
+        """
+        Start a background listener that detects Ctrl+L on Windows.
+        When Ctrl+L is pressed, it sets the provided stop_event.
+        """
+        if msvcrt is None:
+            return None
+        
+        def listener():
+            while not stop_event.is_set():
+                if msvcrt.kbhit():
+                    ch = msvcrt.getwch()
+                    if ch == '\x0c':  # Ctrl+L
+                        stop_event.set()
+                        print("\nCtrl+L received: stopping fetch after the current page...")
+                        return
+                    # discard any other keypress
+                time.sleep(0.05)
+        thread = threading.Thread(target=listener, daemon=True)
+        thread.start()
+        return thread
+
     def fetch_threads(self):
         """
         Get all DM conversations from Instagram.
@@ -303,13 +331,16 @@ class IGDMTool:
         
         print(f"\nFetching only your messages from the conversation...")
         print("This might still need to page through the thread, but it will only keep your messages.")
+        print("Press Ctrl+L to stop early and continue with deletion using messages already fetched.")
         
         our_messages = []  # Will store only the messages sent by our account
         next_cursor = None  # Used for pagination (getting next page of messages)
         page = 0
+        stop_event = threading.Event()
+        listener = self._start_ctrl_l_listener(stop_event)
         
         try:
-            while True:
+            while not stop_event.is_set():
                 page += 1
                 # Build the request parameters
                 params = {
@@ -344,17 +375,79 @@ class IGDMTool:
                 
                 # Check if there are more messages to load
                 next_cursor = thread_data.get("next_cursor")
-                if not next_cursor:
-                    break  # No more pages
+                if not next_cursor or stop_event.is_set():
+                    break  # No more pages or user requested stop
                 
                 # Small delay to avoid hitting Instagram's rate limits
                 time.sleep(0.5)
             
-            print(f"\n✓ Total messages sent by you: {len(our_messages)}")
+            if stop_event.is_set():
+                print(f"\nStopped early. Collected {len(our_messages)} of your messages so far.")
+            else:
+                print(f"\n✓ Total messages sent by you: {len(our_messages)}")
             return our_messages
             
         except Exception as e:
             print(f"ERROR: Failed to fetch messages - {e}")
+            return None
+        finally:
+            stop_event.set()
+            if listener is not None:
+                listener.join(timeout=0.1)
+
+    def count_thread_messages(self):
+        """
+        Count all messages in the selected conversation.
+        This is useful when you just want to know how many messages are in the chat.
+        """
+        if not self.selected_thread_id:
+            print("ERROR: No conversation selected!")
+            return None
+        
+        print(f"\nCounting messages in the selected conversation...")
+        total_messages = 0
+        my_message_count = 0
+        next_cursor = None
+        page = 0
+        
+        try:
+            while True:
+                page += 1
+                params = {
+                    "limit": "20"
+                }
+                if next_cursor:
+                    params["cursor"] = next_cursor
+                
+                response = self.client.private_request(
+                    f"direct_v2/threads/{self.selected_thread_id}",
+                    params=params
+                )
+                
+                thread_data = response.get("thread", {})
+                messages = thread_data.get("items", [])
+                
+                if not messages:
+                    break
+                
+                for msg in messages:
+                    total_messages += 1
+                    if str(msg.get("user_id", "")) == self.my_user_id:
+                        my_message_count += 1
+                
+                print(f"  Page {page}: loaded {len(messages)} messages, total so far {total_messages}")
+                
+                next_cursor = thread_data.get("next_cursor")
+                if not next_cursor:
+                    break
+                
+                time.sleep(0.5)
+            
+            print(f"\n✓ Total messages in conversation: {total_messages}")
+            print(f"✓ Messages sent by you: {my_message_count}")
+            return total_messages
+        except Exception as e:
+            print(f"ERROR: Failed to count messages - {e}")
             return None
     
     # ---- DELETE ALL OUR MESSAGES ----
@@ -461,27 +554,34 @@ class IGDMTool:
             print("MAIN MENU")
             print("-"*40)
             print("1. Show my conversations")
-            print("2. Select a conversation and delete ALL my messages")
-            print("3. Exit")
+            print("2. Select a conversation and count all messages")
+            print("3. Select a conversation and delete ALL my messages")
+            print("4. Exit")
             
-            choice = input("\nWhat would you like to do? (1-3): ").strip()
+            choice = input("\nWhat would you like to do? (1-4): ").strip()
             
             if choice == "1":
                 # Show all conversations
                 self.fetch_threads()
                 
             elif choice == "2":
+                # Count messages in a selected conversation
+                if self.fetch_threads():
+                    if self.select_thread():
+                        self.count_thread_messages()
+                
+            elif choice == "3":
                 # Full workflow: fetch threads, select one, delete messages
                 if self.fetch_threads():
                     if self.select_thread():
                         self.delete_all_my_messages()
                 
-            elif choice == "3":
+            elif choice == "4":
                 print("\nGoodbye! 👋")
                 break
                 
             else:
-                print("Invalid choice! Please enter 1, 2, or 3.")
+                print("Invalid choice! Please enter 1, 2, 3, or 4.")
 
 
 # --- 4. START THE PROGRAM ---
