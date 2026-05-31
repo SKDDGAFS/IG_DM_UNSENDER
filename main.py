@@ -37,6 +37,7 @@ except ImportError as e:
 # We save the login session to a file so we don't have to log in every time
 # This prevents Instagram from thinking we're a bot (too many logins = suspicious)
 SESSION_FILE = "session.json"
+DEFAULT_DELETE_DELAY = 2.0  # seconds between delete requests (increase to be safer)
 
 def get_password():
     """
@@ -107,6 +108,8 @@ class IGDMTool:
         self.my_user_id = None           # Our Instagram user ID (filled after login)
         self.threads = []                # Will store all our DM conversations
         self.selected_thread_id = None   # The thread selected for deletion
+        self.delete_delay = DEFAULT_DELETE_DELAY
+        self.max_delete_retries = 3
     
     # ---- LOGIN ----
     
@@ -449,6 +452,18 @@ class IGDMTool:
         except Exception as e:
             print(f"ERROR: Failed to count messages - {e}")
             return None
+
+    def _private_delete(self, item_id):
+        """
+        Perform the delete private_request for an item_id, handling different instagrapi signatures.
+        Raises the last exception on failure.
+        """
+        endpoint = f"direct_v2/threads/{self.selected_thread_id}/items/{item_id}/delete/"
+        try:
+            return self.client.private_request(endpoint, method="POST")
+        except TypeError:
+            # Older instagrapi versions may not accept `method` kwarg
+            return self.client.private_request(endpoint)
     
     # ---- DELETE ALL OUR MESSAGES ----
     
@@ -480,54 +495,77 @@ class IGDMTool:
         
         # Start deleting messages one by one
         print(f"\nDeleting {len(our_messages)} messages...")
-        
+
+        # Allow user to override delete delay
+        try:
+            resp = input(f"Enter delay between deletions in seconds (default {self.delete_delay}): ").strip()
+            if resp:
+                val = float(resp)
+                if val >= 0:
+                    self.delete_delay = val
+        except Exception:
+            # keep default if parsing fails
+            pass
+
         deleted_count = 0
         failed_count = 0
-        
+
         for i, message in enumerate(our_messages, 1):
+            item_id = None
             try:
                 # Get the message ID (item_id)
                 item_id = message.get("item_id")
-                
+
                 if not item_id:
                     print(f"  [{i}/{len(our_messages)}] Skipping - no item ID")
                     failed_count += 1
                     continue
-                
-                # Delete this specific message
-                # The API endpoint for deleting a message is:
-                # direct_v2/threads/{thread_id}/items/{item_id}/delete/
-                # Different instagrapi versions accept different private_request signatures.
-                # Try passing method="POST" first (newer versions), otherwise fall back
-                # to calling without the method argument.
-                try:
-                    self.client.private_request(
-                        f"direct_v2/threads/{self.selected_thread_id}/items/{item_id}/delete/",
-                        method="POST"
-                    )
-                except TypeError:
-                    # Older instagrapi versions may not accept `method` kwarg
+
+                # Try deleting with retries and exponential backoff on rate-limit/server errors
+                attempts = 0
+                success = False
+                last_exc = None
+
+                while attempts < self.max_delete_retries and not success:
+                    attempts += 1
                     try:
-                        self.client.private_request(
-                            f"direct_v2/threads/{self.selected_thread_id}/items/{item_id}/delete/"
-                        )
-                    except Exception:
-                        raise
-                
-                deleted_count += 1
-                
-                # Show progress
-                print(f"  [{i}/{len(our_messages)}] ✓ Deleted message {item_id}")
-                
-                # Important: Wait between deletions to avoid getting rate-limited
-                # Instagram might block us if we delete too fast
-                time.sleep(1)  # 1 second delay between each deletion
-                
+                        self._private_delete(item_id)
+                        success = True
+                        break
+                    except Exception as e:
+                        last_exc = e
+                        err_str = str(e)
+                        # Heuristic to detect rate-limit / server-side temporary errors
+                        retryable = False
+                        if '403' in err_str or '1545003' in err_str or 'please try again' in err_str.lower() or 'rate' in err_str.lower():
+                            retryable = True
+
+                        if retryable and attempts < self.max_delete_retries:
+                            wait = self.delete_delay * (2 ** (attempts - 1))
+                            print(f"  [{i}/{len(our_messages)}] Temporary error detected: {err_str}. Backing off {wait}s (retry {attempts}/{self.max_delete_retries})")
+                            time.sleep(wait)
+                            continue
+                        else:
+                            # Non-retryable or out of retries
+                            break
+
+                if success:
+                    deleted_count += 1
+                    print(f"  [{i}/{len(our_messages)}] ✓ Deleted message {item_id}")
+                    time.sleep(self.delete_delay)
+                else:
+                    failed_count += 1
+                    print(f"  [{i}/{len(our_messages)}] ✗ Failed to delete {item_id}: {last_exc}")
+
+                # If we get too many errors, maybe Instagram is blocking us
+                if failed_count > 5:
+                    print("\n⚠️  Too many failures. Stopping to be safe.")
+                    print("Instagram might be rate-limiting you. Try again later.")
+                    break
+
             except Exception as e:
                 failed_count += 1
                 print(f"  [{i}/{len(our_messages)}] ✗ Failed to delete {item_id}: {e}")
-                
-                # If we get too many errors, maybe Instagram is blocking us
                 if failed_count > 5:
                     print("\n⚠️  Too many failures. Stopping to be safe.")
                     print("Instagram might be rate-limiting you. Try again later.")
